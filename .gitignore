@@ -1,0 +1,42 @@
+# Environment files
+.env
+backend/.env
+frontend/.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+backend/venv/
+venv/
+.env/
+.venv/
+
+# Database
+*.db
+backend/*.db
+backend/mediguard.db
+
+# Generated reports
+backend/generated_reports/
+generated_reports/
+
+# Node
+node_modules/
+frontend/node_modules/
+dist/
+frontend/dist/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
