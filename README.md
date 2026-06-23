@@ -474,9 +474,8 @@ MediGuard AI is a software project and demonstration system. It is not intended 
 
 ## Author
 
-Developed by **Shahmul**
+Developed by **Md. Shahmul Islam**
 
-GitHub: [Shahmul1230](https://github.com/Shahmul1230)
 
 ---
 
