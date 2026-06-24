@@ -604,12 +604,18 @@ function ConsultationView({
   downloadPatientFile,
   loading,
 }) {
+  const status = normalizeStatus(consultation.status);
+  const isFollowupStage = status === "follow_up_questions_generated";
+  const isApproved = status === "doctor_approved";
+
   return (
     <section className="card">
       <div className="consultation-top">
         <div>
           <h2>Consultation RX-{String(consultation.id).padStart(4, "0")}</h2>
-          <p className="muted">Patient consultation status and prescription files</p>
+          <p className="muted">
+            Track your consultation status and download your approved prescription.
+          </p>
         </div>
 
         <div className="consultation-top-right">
@@ -625,30 +631,26 @@ function ConsultationView({
         </div>
       </div>
 
+      <PatientPublicStatusCard consultation={consultation} />
+
       <OverviewGrid consultation={consultation} />
 
-      {consultation.status === "follow_up_questions_generated" && (
+      {isFollowupStage && (
         <div className="pretty-section">
-          <h3>Agent 1 Follow-up Questions</h3>
-          <p className="muted">You can answer or skip any question.</p>
+          <h3>Additional Questions</h3>
+          <p className="muted">
+            Please answer these questions if you know the answer. You can also skip.
+          </p>
 
           <div className="question-list">
             {(consultation.follow_up_questions || []).map((q, index) => (
-              <div className="question-card" key={index}>
+              <div className="question-card patient-question-card" key={index}>
                 <div className="question-card-top">
                   <h4>{q.question}</h4>
                   <span className={`priority-pill ${q.priority || "medium"}`}>
                     {q.priority || "medium"}
                   </span>
                 </div>
-
-                <p>
-                  <strong>Reason:</strong> {q.reason}
-                </p>
-
-                <p>
-                  <strong>Related to:</strong> {q.related_to}
-                </p>
 
                 <div className="answer-area">
                   <select
@@ -661,7 +663,7 @@ function ConsultationView({
                   </select>
 
                   <input
-                    placeholder="Or type custom answer"
+                    placeholder="Or type your answer"
                     onChange={(e) => updateAnswer(index, e.target.value)}
                   />
                 </div>
@@ -670,29 +672,42 @@ function ConsultationView({
           </div>
 
           <button className="primary" onClick={submitFollowups} disabled={loading}>
-            Submit to AI Agents
+            Submit Answers
           </button>
         </div>
       )}
 
-      {consultation.agent3_prescription ? (
-        <PrescriptionCard data={consultation.agent3_prescription} />
-      ) : consultation.prescription_text ? (
-        <SimplePrescriptionText text={consultation.prescription_text} />
-      ) : null}
+      {!isFollowupStage && !isApproved && (
+        <div className="patient-waiting-card">
+          <div className="waiting-icon">✓</div>
 
-      {consultation.status === "doctor_review_pending" && (
-        <div className="warning">
-          AI prescription draft has been generated. Waiting for doctor review.
+          <div>
+            <h3>Thank you for sharing your health concern with us.</h3>
+
+            <p>
+              Our AI system is now analyzing your information and preparing a
+              structured prescription draft. A registered doctor will review and
+              verify the prescription before it becomes final.
+            </p>
+
+            <p>
+              Once the doctor approves it, the prescription will be sent
+              automatically to your registered email address. You will also be able
+              to download the PDF and DOCX prescription from this page.
+            </p>
+
+            <strong>Estimated verification time: usually 2–10 minutes.</strong>
+          </div>
         </div>
       )}
 
-      {consultation.status === "doctor_approved" && (
-        <div className="success-box">
-          <h3>Doctor Approved</h3>
+      {isApproved && (
+        <div className="success-box patient-approved-box">
+          <h3>Your Prescription is Approved</h3>
 
           <p>
-            Decision: <strong>{prettyDecision(consultation.doctor_decision)}</strong>
+            A registered doctor has approved your prescription. You can now download
+            the final prescription file.
           </p>
 
           <p>
@@ -702,32 +717,78 @@ function ConsultationView({
           {consultation.email_error && (
             <p className="muted">Email note: {consultation.email_error}</p>
           )}
-        </div>
-      )}
-
-      {consultation.can_patient_download ? (
-        <div className="download-box">
-          <h3>Prescription Ready</h3>
-          <p className="muted">Your doctor-approved prescription is ready.</p>
 
           <div className="download-actions">
             <button onClick={() => downloadPatientFile("pdf")}>
-              Download PDF
+              Download PDF Prescription
             </button>
 
             <button onClick={() => downloadPatientFile("docx")}>
-              Download DOCX
+              Download DOCX Prescription
             </button>
           </div>
         </div>
-      ) : (
-        consultation.status !== "follow_up_questions_generated" && (
-          <div className="warning">
-            Download will be available after doctor approval.
-          </div>
-        )
       )}
     </section>
+  );
+}
+
+function PatientPublicStatusCard({ consultation }) {
+  const status = normalizeStatus(consultation.status);
+
+  const steps = [
+    {
+      key: "submitted",
+      label: "Information Submitted",
+      active: true,
+    },
+    {
+      key: "ai_processing",
+      label: "AI Draft Preparation",
+      active:
+        status === "running_ai_agents" ||
+        status === "agent1_completed" ||
+        status === "agent2_completed" ||
+        status === "doctor_review_pending" ||
+        status === "doctor_approved",
+    },
+    {
+      key: "doctor_review",
+      label: "Doctor Review",
+      active: status === "doctor_review_pending" || status === "doctor_approved",
+    },
+    {
+      key: "approved",
+      label: "Prescription Ready",
+      active: status === "doctor_approved",
+    },
+  ];
+
+  return (
+    <div className="patient-status-card">
+      <div>
+        <h3>
+          {status === "doctor_approved"
+            ? "Prescription Ready"
+            : "Processing Your Consultation"}
+        </h3>
+
+        <p>
+          We have received your submitted information. Your consultation is being
+          processed securely, and the final prescription will be available after
+          doctor approval.
+        </p>
+      </div>
+
+      <div className="patient-progress">
+        {steps.map((step) => (
+          <div className={`progress-step ${step.active ? "active" : ""}`} key={step.key}>
+            <span>{step.active ? "✓" : ""}</span>
+            <p>{step.label}</p>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 

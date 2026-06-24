@@ -863,3 +863,130 @@ button:disabled {
     padding: 20px;
   }
 }
+
+/* Patient-friendly hidden AI workflow UI */
+
+.patient-status-card {
+  margin: 18px 0;
+  padding: 22px;
+  border-radius: 22px;
+  border: 1px solid #bfdbfe;
+  background: linear-gradient(135deg, #eff6ff 0%, #f8fafc 100%);
+}
+
+.patient-status-card h3 {
+  margin: 0 0 8px;
+  color: #1e3a8a;
+}
+
+.patient-status-card p {
+  margin: 0;
+  color: #475569;
+  line-height: 1.65;
+}
+
+.patient-progress {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.progress-step {
+  min-height: 94px;
+  padding: 14px;
+  border-radius: 18px;
+  background: white;
+  border: 1px solid #e2e8f0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.progress-step span {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #e2e8f0;
+  color: #64748b;
+  font-weight: 900;
+}
+
+.progress-step.active span {
+  background: #2563eb;
+  color: white;
+}
+
+.progress-step p {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 800;
+  color: #334155;
+}
+
+.patient-waiting-card {
+  margin-top: 22px;
+  padding: 24px;
+  border-radius: 24px;
+  border: 1px solid #bbf7d0;
+  background: #f0fdf4;
+  display: grid;
+  grid-template-columns: 52px 1fr;
+  gap: 18px;
+  align-items: start;
+}
+
+.waiting-icon {
+  width: 52px;
+  height: 52px;
+  border-radius: 999px;
+  background: #16a34a;
+  color: white;
+  font-size: 24px;
+  font-weight: 900;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.patient-waiting-card h3 {
+  margin: 0 0 10px;
+  color: #166534;
+}
+
+.patient-waiting-card p {
+  margin: 8px 0;
+  color: #334155;
+  line-height: 1.7;
+}
+
+.patient-waiting-card strong {
+  display: inline-block;
+  margin-top: 10px;
+  color: #166534;
+}
+
+.patient-approved-box {
+  margin-top: 22px;
+}
+
+.patient-approved-box .download-actions {
+  margin-top: 18px;
+}
+
+.patient-question-card p {
+  display: none;
+}
+
+@media (max-width: 950px) {
+  .patient-progress {
+    grid-template-columns: 1fr;
+  }
+
+  .patient-waiting-card {
+    grid-template-columns: 1fr;
+  }
+}
