@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     SMTP_HOST: str = "smtp.gmail.com"
     SMTP_PORT: int = 587
     SMTP_USERNAME: str = "riyaaan97@gmail.com"
-    SMTP_PASSWORD: str = "wejl ljby ahww ivjq"
+    SMTP_PASSWORD: str = "wejlljbyahwwivjq"
     SMTP_FROM_EMAIL: str = "riyaaan97@gmail.com"
     SMTP_FROM_NAME: str = "MediGuard AI"
 
