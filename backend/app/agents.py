@@ -20,7 +20,7 @@ def extract_json_from_text(text: str) -> Dict[str, Any]:
     except Exception:
         pass
 
-    match = re.search(r"\{.*\}", text, re.DOTALL)
+    match = re.search(r"\{.*\}", text or "", re.DOTALL)
 
     if not match:
         return {}
@@ -31,7 +31,12 @@ def extract_json_from_text(text: str) -> Dict[str, Any]:
         return {}
 
 
-async def call_groq_json(system_prompt: str, user_payload: Dict[str, Any]) -> Dict[str, Any]:
+async def call_groq_json(
+    system_prompt: str,
+    user_payload: Dict[str, Any],
+    temperature: float = 0.25,
+    max_tokens: int = 3000,
+) -> Dict[str, Any]:
     client = get_groq_client()
 
     if not client:
@@ -50,8 +55,8 @@ async def call_groq_json(system_prompt: str, user_payload: Dict[str, Any]) -> Di
                     "content": json.dumps(user_payload, ensure_ascii=False, indent=2),
                 },
             ],
-            temperature=0.25,
-            max_tokens=3000,
+            temperature=temperature,
+            max_tokens=max_tokens,
         )
 
         content = response.choices[0].message.content or ""
@@ -106,6 +111,7 @@ def detect_emergency(symptoms: str, additional_info: str = "") -> bool:
         "fainting",
         "severe breathing problem",
         "shortness of breath",
+        "breathing difficulty",
         "oxygen low",
         "spo2 low",
         "seizure",
@@ -120,6 +126,11 @@ def detect_emergency(symptoms: str, additional_info: str = "") -> bool:
         "high fever with stiff neck",
         "severe allergic reaction",
         "anaphylaxis",
+        "vision loss",
+        "sudden vision loss",
+        "one sided weakness",
+        "facial droop",
+        "severe headache with vomiting",
     ]
 
     return any(keyword in text for keyword in emergency_keywords)
@@ -580,6 +591,7 @@ def is_vague_medicine_name(name: str) -> bool:
         "vitamin",
         "multivitamin",
         "multi vitamin",
+        "supplement",
     ]
 
     return clean_name in vague_names
@@ -605,6 +617,10 @@ def looks_like_specific_antibiotic(name: str) -> bool:
         "ceftriaxone",
         "cefpodoxime",
         "clindamycin",
+        "linezolid",
+        "meropenem",
+        "piperacillin",
+        "tazobactam",
     ]
 
     return any(item in clean_name for item in specific_antibiotics)
@@ -631,6 +647,9 @@ def condition_supports_antibiotic(patient_data: Dict[str, Any]) -> bool:
         "ear discharge",
         "high fever for 3 days",
         "fever more than 3 days",
+        "doctor suspects bacterial",
+        "bacterial infection",
+        "culture positive",
     ]
 
     return any(keyword in text for keyword in supportive_keywords)
@@ -665,9 +684,20 @@ def is_risky_emergency_medicine(name: str) -> bool:
         "tramadol",
         "morphine",
         "pethidine",
+        "insulin",
+        "warfarin",
+        "heparin",
+        "rivaroxaban",
+        "apixaban",
     ]
 
     return any(keyword in clean_name for keyword in risky_keywords)
+
+
+def medicine_has_required_fields(med: Dict[str, Any]) -> bool:
+    required = ["medicine_name", "dose", "frequency", "duration", "note"]
+
+    return all(str(med.get(key) or "").strip() for key in required)
 
 
 def clean_weak_medicine_suggestions(
@@ -677,6 +707,7 @@ def clean_weak_medicine_suggestions(
     allergies = (patient_data.get("allergies") or "").lower()
     existing = (patient_data.get("existing_disease") or "").lower()
     full_text = get_case_text(patient_data)
+
     emergency = detect_emergency(
         patient_data.get("symptoms", ""),
         patient_data.get("additional_info", ""),
@@ -722,6 +753,7 @@ def clean_weak_medicine_suggestions(
                 "lab confirmed",
                 "doctor advised vitamin",
                 "known vitamin deficiency",
+                "low vitamin",
             ]
         ):
             continue
@@ -744,8 +776,12 @@ def clean_weak_medicine_suggestions(
         med["duration"] = str(med.get("duration") or "Doctor to confirm duration").strip()
 
         note = str(med.get("note") or "").strip()
+
         if not note:
-            note = "Doctor must verify indication, contraindications, allergy, current medicines, and suitability before approval."
+            note = (
+                "Doctor must verify indication, contraindications, allergy, current medicines, "
+                "and suitability before approval."
+            )
 
         if "doctor" not in note.lower():
             note = f"{note} Doctor must verify suitability before approval."
@@ -758,6 +794,9 @@ def clean_weak_medicine_suggestions(
                 )
 
         med["note"] = note
+
+        if not medicine_has_required_fields(med):
+            continue
 
         seen_names.add(name_lower)
         cleaned.append(med)
@@ -822,11 +861,12 @@ def is_broad_non_specific_case(patient_data: Dict[str, Any]) -> bool:
 
 def build_dynamic_fallback_medicines(patient_data: Dict[str, Any]) -> List[Dict[str, str]]:
     """
-    Kept only for backward compatibility.
+    Intentionally no hardcoded symptom-to-medicine mapping.
 
-    Important:
-    No symptom-to-medicine hardcoded fallback here.
-    Medicine must be generated dynamically by Groq through repair_medicine_section_with_ai().
+    This function exists only for backward compatibility with older code references.
+    Medicines should be generated dynamically by Groq through:
+    - agent3_prescription_generator()
+    - repair_medicine_section_with_ai()
     """
     return []
 
@@ -836,36 +876,39 @@ async def repair_medicine_section_with_ai(
     current_result: Dict[str, Any],
     agent1_review: Dict[str, Any],
     agent2_review: Dict[str, Any],
+    attempt: int = 1,
 ) -> List[Dict[str, str]]:
     system_prompt = """
-You are a medical prescription draft assistant for Bangladesh.
+You are a clinical prescription draft assistant for Bangladesh.
 
 Task:
 Generate ONLY the medicine_section array for doctor review.
 
-Core instruction:
+Core goal:
+- Best effort: try not to leave medicine_section empty.
+- But never invent unsafe or unjustified medicines.
 - Medicine must be generated dynamically from the full patient case.
 - Do NOT use a fixed template.
 - Do NOT give the same medicines for every case.
-- Do NOT follow a simple symptom-to-medicine rule.
-- Think clinically from the full case context.
+- Do NOT follow a simple symptom-to-medicine mapping.
+- Think clinically from the full case context, Bangladesh context, age, sex, duration, vitals, allergies, current medicines, and red flags.
 
-Safety rules:
+Safety and quality:
 - This is NOT final medical advice.
 - A registered doctor will review and approve.
-- If emergency signs exist, still provide safe supportive/symptomatic medicine candidates only when appropriate.
+- If emergency signs exist, medicines may still be listed only as doctor-review candidates when clinically justifiable.
 - Do not provide definitive emergency treatment.
-- Do not suggest heart medicine, BP medicine, aspirin, nitroglycerin, sedatives, steroids, strong painkillers, or antibiotics unless clearly justified for doctor review.
+- Avoid heart medicine, blood pressure medicine, aspirin, nitroglycerin, sedatives, steroids, strong painkillers, anticoagulants, insulin, or antibiotics unless clearly justified for doctor review.
 - Do not prescribe antibiotics randomly.
 - Do not write vague category names like Painkiller, Antibiotic, Antihistamine, Vitamin, Multivitamin, Cough Syrup, Tablet, Capsule, Syrup.
 - Use specific generic medicine names only.
 - Every medicine must include medicine_name, dose, frequency, duration, and note.
-- If no safe medicine candidate is reasonable, return an empty array.
-- For broad/non-specific cases, do not randomly add multivitamin. Prefer investigation and doctor evaluation if needed.
-- Respect allergies, existing disease, and current medicine.
-- Mention in note that doctor must verify suitability before approval.
+- The note must explain why the medicine is being considered and what the doctor must verify.
+- If no safe clinically justified medicine is possible, return an empty array.
+- For broad/non-specific cases, do not randomly add multivitamin. Use medicine only if there is a case-specific reason.
+- Respect allergies, existing diseases, current medicines, pregnancy possibility if relevant, and emergency risks.
 
-Return only valid JSON in this format:
+Return only valid JSON:
 {
   "medicine_section": [
     {
@@ -873,7 +916,81 @@ Return only valid JSON in this format:
       "dose": "string",
       "frequency": "string",
       "duration": "string",
-      "note": "doctor review and safety note"
+      "note": "case-specific reason and doctor verification note"
+    }
+  ]
+}
+"""
+
+    payload = {
+        "attempt": attempt,
+        "patient_data": build_full_patient_context(
+            patient_data=patient_data,
+            followup_answers=agent1_review.get("followup_answers_used", []),
+            agent1_review=agent1_review,
+            agent2_review=agent2_review,
+        ),
+        "current_prescription_draft": current_result,
+        "instruction": (
+            "Generate medicine dynamically from this exact case. "
+            "Do not use fixed fallback medicines. "
+            "Try your best to provide clinically justified doctor-review medicine candidates, "
+            "but return empty if medicine is not safe or not clinically clear."
+        ),
+    }
+
+    repaired = await call_groq_json(
+        system_prompt=system_prompt,
+        user_payload=payload,
+        temperature=0.35 if attempt == 1 else 0.45,
+        max_tokens=2000,
+    )
+
+    if not repaired or not isinstance(repaired.get("medicine_section"), list):
+        return []
+
+    return clean_weak_medicine_suggestions(repaired["medicine_section"], patient_data)
+
+
+async def final_medicine_retry_with_ai(
+    patient_data: Dict[str, Any],
+    current_result: Dict[str, Any],
+    agent1_review: Dict[str, Any],
+    agent2_review: Dict[str, Any],
+) -> List[Dict[str, str]]:
+    """
+    Final best-effort retry if Rx is empty.
+    No hardcoded medicine names. AI must decide from case.
+    """
+    system_prompt = """
+You are a cautious Bangladeshi clinical prescription draft assistant.
+
+The previous draft has an empty medicine_section.
+
+Task:
+Make one final best-effort attempt to generate medicine_section dynamically for doctor review.
+
+Rules:
+- Do not use any fixed template.
+- Do not copy common medicines mechanically.
+- Medicine must be justified by the exact patient case.
+- Medicine can be symptomatic, supportive, or disease-directed only if clinically reasonable.
+- Emergency cases may still have doctor-review candidates, but no definitive emergency treatment.
+- If no medicine is safe or clinically justified, return an empty medicine_section.
+- Never use vague category names.
+- Every item must have medicine_name, dose, frequency, duration, and note.
+- The note must explain the case-specific reason and doctor verification requirements.
+- Prefer Bangladesh-relevant generic medicine names.
+
+Return only valid JSON:
+{
+  "medicine_section": [
+    {
+      "medicine_name": "specific generic medicine name",
+      "dose": "string",
+      "frequency": "string",
+      "duration": "string",
+      "note": "case-specific reason and doctor verification note"
     }
   ]
 }
@@ -888,13 +1005,17 @@ Return only valid JSON in this format:
         ),
         "current_prescription_draft": current_result,
         "instruction": (
-            "Generate medicine dynamically from this exact case. "
-            "Do not use fixed fallback medicines. "
-            "Do not add medicines just to fill the section."
+            "This is the final retry. Best effort to avoid empty Rx, but safety comes first. "
+            "Do not hardcode or template. Use only case-specific medicine candidates."
         ),
     }
 
-    repaired = await call_groq_json(system_prompt, payload)
+    repaired = await call_groq_json(
+        system_prompt=system_prompt,
+        user_payload=payload,
+        temperature=0.5,
+        max_tokens=2000,
+    )
 
     if not repaired or not isinstance(repaired.get("medicine_section"), list):
         return []
@@ -940,18 +1061,18 @@ def fallback_agent3_prescription(
             "blood_group": patient_data.get("blood_group", ""),
         },
         "chief_complaints": symptoms_list or [patient_data.get("symptoms", "")],
-        "possible_diagnosis": diagnosis[:3],
+        "possible_diagnosis": diagnosis[:4],
         "medicine_section": [],
         "healthcare_advice": [
             "Drink safe water and maintain hydration.",
-            "Avoid self-medicating with antibiotics.",
+            "Avoid self-medicating with antibiotics or prescription medicines.",
             "Take rest and monitor symptoms.",
             "Seek urgent care if symptoms worsen or red flag signs appear.",
         ],
         "investigation_advice": agent2_review.get("doctor_consideration_tests", [])
         or [
-            "CBC if fever, infection signs, weakness, or persistent symptoms are present",
-            "Relevant test based on doctor review",
+            "Relevant tests based on doctor review",
+            "Physical examination by a registered doctor",
         ],
         "follow_up_advice": "Follow up with a registered doctor if symptoms persist or worsen.",
         "all_patient_fields_considered": True,
@@ -986,7 +1107,13 @@ def enforce_prescription_quality(
     if not isinstance(result.get("chief_complaints"), list):
         result["chief_complaints"] = list_from_text(patient_data.get("symptoms", ""))
 
+    if not result.get("chief_complaints"):
+        result["chief_complaints"] = [patient_data.get("symptoms", "") or "Not available"]
+
     if not isinstance(result.get("possible_diagnosis"), list):
+        result["possible_diagnosis"] = ["Requires doctor review based on complete history"]
+
+    if not result.get("possible_diagnosis"):
         result["possible_diagnosis"] = ["Requires doctor review based on complete history"]
 
     if not isinstance(result.get("medicine_section"), list):
@@ -1015,19 +1142,20 @@ def enforce_prescription_quality(
             "Seek emergency medical care immediately.",
             "Do not delay care while waiting for online prescription review.",
             "The listed medicines, if any, are only doctor-review candidates and not definitive emergency treatment.",
-            "Avoid self-medicating with antibiotics, heart medicines, blood pressure medicines, aspirin, nitroglycerin, steroids, sedatives, or strong painkillers unless a doctor confirms.",
+            "Avoid self-medicating with antibiotics, heart medicines, blood pressure medicines, aspirin, nitroglycerin, steroids, sedatives, anticoagulants, insulin, or strong painkillers unless a doctor confirms.",
         ]
 
         result["investigation_advice"] = [
             "Emergency doctor assessment required.",
             "Blood pressure, pulse, oxygen saturation, and physical examination.",
             "ECG/troponin if chest pain or cardiac symptoms are present.",
+            "Neurological and eye/vision assessment if headache with vision problem, weakness, confusion, or neurological symptoms is present.",
             "CBC, blood glucose, electrolytes, and other tests based on doctor assessment.",
         ]
 
         result["follow_up_advice"] = (
             "Go to the nearest emergency department immediately, especially if chest pain, fainting, "
-            "breathing difficulty, severe weakness, confusion, severe dehydration, or worsening symptoms occur."
+            "breathing difficulty, severe weakness, confusion, vision problem, severe dehydration, or worsening symptoms occur."
         )
 
         return result
@@ -1035,16 +1163,16 @@ def enforce_prescription_quality(
     if is_broad_non_specific_case(patient_data):
         result["possible_diagnosis"] = [
             "Broad symptoms requiring clinical evaluation",
-            "Possible thyroid imbalance, anemia, nutritional deficiency, sleep/stress-related issue, respiratory infection, or musculoskeletal strain should be assessed by a doctor",
+            "Possible thyroid imbalance, anemia, nutritional deficiency, sleep/stress-related issue, respiratory infection, or musculoskeletal condition should be assessed by a doctor",
         ]
 
-        result["healthcare_advice"] = [
-            "Maintain regular sleep schedule and hydration.",
-            "Take balanced Bangladeshi diet with protein, vegetables, fruits, and safe drinking water.",
-            "Avoid self-medicating with antibiotics or vitamins without doctor advice.",
-            "For neck pain, avoid prolonged bad posture and use gentle rest or heat therapy if comfortable.",
-            "Monitor cough, fever, breathing difficulty, and worsening headache.",
-        ]
+        if not result["healthcare_advice"]:
+            result["healthcare_advice"] = [
+                "Maintain regular sleep schedule and hydration.",
+                "Take balanced Bangladeshi diet with protein, vegetables, fruits, and safe drinking water.",
+                "Avoid self-medicating with antibiotics or vitamins without doctor advice.",
+                "Monitor cough, fever, breathing difficulty, worsening headache, weakness, and general condition.",
+            ]
 
         result["investigation_advice"] = [
             "CBC with hemoglobin percentage",
@@ -1057,11 +1185,11 @@ def enforce_prescription_quality(
 
         result["follow_up_advice"] = (
             "Consult a registered doctor within 2–3 days for proper evaluation. "
-            "Seek urgent care if breathing difficulty, high fever, severe headache, weakness, confusion, or worsening symptoms occur."
+            "Seek urgent care if breathing difficulty, high fever, severe headache, weakness, confusion, chest pain, or worsening symptoms occur."
         )
 
         result["quality_note"] = (
-            "Broad/non-specific case: medicine candidates must be dynamically generated and verified by doctor."
+            "Broad/non-specific case: medicine candidates are generated dynamically and must be verified by doctor."
         )
 
         return result
@@ -1070,12 +1198,14 @@ def enforce_prescription_quality(
         result["healthcare_advice"] = [
             "Drink safe water and maintain hydration.",
             "Take rest and monitor symptoms.",
+            "Avoid self-medicating with antibiotics or prescription medicines.",
             "Seek medical care if symptoms worsen.",
         ]
 
     if not result["investigation_advice"]:
         result["investigation_advice"] = [
             "Relevant investigations based on doctor assessment",
+            "Physical examination by a registered doctor if symptoms persist or worsen",
         ]
 
     if not result.get("follow_up_advice"):
@@ -1098,28 +1228,35 @@ Generate a structured prescription draft for doctor review.
 VERY IMPORTANT RULES:
 - This is an AI-generated draft only. A registered doctor will review and approve it.
 - The goal is to reduce doctor workload, not to replace the doctor.
-- Medicine must be generated dynamically from the patient case, not from a fixed template.
+- Medicine must be generated dynamically from the full patient case, not from a fixed template.
 - Do NOT give the same medicines for every case.
+- Do NOT follow simple symptom-to-medicine mapping.
 - Do NOT use a fixed number of medicines.
-- Do NOT always give 2 medicines.
+- Do NOT always give 1, 2, or 3 medicines.
 - Do NOT prescribe medicine just to fill the Rx section.
-- But do NOT leave Rx empty when safe symptomatic/supportive medicine candidates are reasonable.
-- Even in emergency cases, include safe basic symptomatic/supportive medicine candidates when relevant, but clearly state they are not definitive emergency treatment.
-- For emergency cases, do not suggest antibiotics, BP medicine, heart medicine, aspirin, nitroglycerin, steroids, sedatives, or strong painkillers unless explicit doctor-level indication is present.
-- Emergency warning and urgent doctor/emergency referral must remain visible.
-- For broad/non-specific symptoms, provide safe symptomatic medicine candidates only when relevant, plus strong investigations.
-- Hair fall + tiredness + oversleeping + headache type cases should NOT automatically receive multivitamin.
-- Do NOT suggest vitamins unless deficiency is known, strongly suspected with proper context, or doctor review is needed.
-- Never write vague medicine/category names: Antibiotic, Painkiller, Antihistamine, Vitamin, Multivitamin, Cough syrup, Tablet, Capsule, Syrup.
-- Use specific generic medicine names only.
+- Best effort: try not to leave medicine_section empty, but safety and clinical justification come first.
+- If no safe clinically justified medicine candidate is clear, medicine_section may be empty.
+- Emergency warning and urgent doctor/emergency referral must remain visible when red flags exist.
+- Emergency cases may include medicine candidates only if they are safe, case-specific, and clearly doctor-review candidates; do not provide definitive emergency treatment.
+- Avoid heart medicine, blood pressure medicine, aspirin, nitroglycerin, sedatives, steroids, anticoagulants, insulin, strong painkillers, or antibiotics unless clearly justified for doctor review.
 - Avoid unnecessary antibiotics.
 - If an antibiotic is clinically indicated, medicine_name must be a specific generic antibiotic name, not just "Antibiotic".
 - If bacterial indication is unclear, do not add an antibiotic in Rx. Instead add investigation_advice and follow_up_advice.
+- Do NOT suggest vitamins unless deficiency is known, strongly suspected with proper context, or doctor review is needed.
+- Never write vague medicine/category names: Antibiotic, Painkiller, Antihistamine, Vitamin, Multivitamin, Cough syrup, Tablet, Capsule, Syrup, Supplement.
+- Use specific generic medicine names only.
 - For every medicine, include dose, frequency, duration, and a note.
-- For every antibiotic candidate, include a note explaining suspected indication and what the doctor must verify.
+- For every medicine, the note must explain the case-specific reason and what the doctor must verify.
 - Prefer generic names, not Bangladeshi brand names.
 - Consider all patient information, not only the main symptom text.
 - Do not invent patient history, disease, medicine use, pregnancy status, HIV/ART, TB, diabetes, hypertension, or allergy unless provided.
+
+Bangladesh-specific context:
+- This will be used for Bangladeshi patients.
+- Consider Bangladesh common context: hot weather, dehydration risk, food/water hygiene, seasonal fever, dengue/viral fever context, respiratory infection, dust/air pollution, nutrition, and access to common generic medicines.
+- Respect local safety: avoid random antibiotics, avoid random steroids, avoid random sedatives, avoid unnecessary injections.
+- Use generic names suitable for doctor review in Bangladesh, not brand names.
+- Prioritize practical investigations and doctor review when medicine choice is uncertain.
 
 You must consider ALL of these:
 - age
@@ -1138,12 +1275,6 @@ You must consider ALL of these:
 - Agent 1 review
 - Agent 2 analysis
 - Bangladesh country context
-
-Bangladesh context:
-- Prefer generic medicine names, not brand names.
-- Think about local environment: hot weather, dehydration, food/water hygiene, seasonal fever, dengue/viral fever context, air pollution, dust, common lifestyle and nutrition issues.
-- Respect allergies, current medicines, and existing diseases.
-- For broad/non-specific symptoms, include symptomatic relief candidates where relevant, and prioritize CBC, thyroid profile, glucose, ferritin/iron, vitamin level if indicated, and doctor physical examination.
 
 Return only valid JSON.
 
@@ -1166,7 +1297,7 @@ JSON format:
       "dose": "string",
       "frequency": "string",
       "duration": "string",
-      "note": "string"
+      "note": "case-specific reason and doctor verification note"
     }
   ],
   "healthcare_advice": ["string"],
@@ -1184,7 +1315,12 @@ JSON format:
         agent2_review=agent2_review,
     )
 
-    result = await call_groq_json(system_prompt, context)
+    result = await call_groq_json(
+        system_prompt=system_prompt,
+        user_payload=context,
+        temperature=0.3,
+        max_tokens=3500,
+    )
 
     if not result or not isinstance(result, dict):
         result = fallback_agent3_prescription(patient_data, agent1_review, agent2_review)
@@ -1202,17 +1338,58 @@ JSON format:
             current_result=result,
             agent1_review=agent1_review,
             agent2_review=agent2_review,
+            attempt=1,
         )
 
         if repaired_medicines:
             result["medicine_section"] = repaired_medicines
-
             result = enforce_prescription_quality(
                 result=result,
                 patient_data=patient_data,
                 agent1_review=agent1_review,
                 agent2_review=agent2_review,
             )
+
+    if not result.get("medicine_section"):
+        repaired_medicines = await repair_medicine_section_with_ai(
+            patient_data=patient_data,
+            current_result=result,
+            agent1_review=agent1_review,
+            agent2_review=agent2_review,
+            attempt=2,
+        )
+
+        if repaired_medicines:
+            result["medicine_section"] = repaired_medicines
+            result = enforce_prescription_quality(
+                result=result,
+                patient_data=patient_data,
+                agent1_review=agent1_review,
+                agent2_review=agent2_review,
+            )
+
+    if not result.get("medicine_section"):
+        final_retry_medicines = await final_medicine_retry_with_ai(
+            patient_data=patient_data,
+            current_result=result,
+            agent1_review=agent1_review,
+            agent2_review=agent2_review,
+        )
+
+        if final_retry_medicines:
+            result["medicine_section"] = final_retry_medicines
+            result = enforce_prescription_quality(
+                result=result,
+                patient_data=patient_data,
+                agent1_review=agent1_review,
+                agent2_review=agent2_review,
+            )
+
+    if not result.get("medicine_section"):
+        result["quality_note"] = (
+            "Medicine section is empty because the AI could not identify a safe, case-specific, "
+            "doctor-review medicine candidate. Doctor assessment is required before medication."
+        )
 
     return result
 
@@ -1296,5 +1473,11 @@ def prescription_json_to_text(data: Dict[str, Any]) -> str:
 
     lines.append("Follow-up:")
     lines.append(data.get("follow_up_advice", "Follow up if symptoms persist or worsen."))
+
+    quality_note = data.get("quality_note")
+    if quality_note:
+        lines.append("")
+        lines.append("Quality Note:")
+        lines.append(str(quality_note))
 
     return "\n".join(lines)
