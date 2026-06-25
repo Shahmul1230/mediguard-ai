@@ -636,46 +636,133 @@ def condition_supports_antibiotic(patient_data: Dict[str, Any]) -> bool:
     return any(keyword in text for keyword in supportive_keywords)
 
 
-def add_medicine(
+def is_risky_emergency_medicine(name: str) -> bool:
+    clean_name = (name or "").strip().lower()
+
+    risky_keywords = [
+        "aspirin",
+        "nitroglycerin",
+        "glyceryl trinitrate",
+        "atenolol",
+        "bisoprolol",
+        "metoprolol",
+        "propranolol",
+        "amlodipine",
+        "nifedipine",
+        "losartan",
+        "valsartan",
+        "captopril",
+        "enalapril",
+        "furosemide",
+        "frusemide",
+        "prednisolone",
+        "dexamethasone",
+        "steroid",
+        "diazepam",
+        "clonazepam",
+        "alprazolam",
+        "sedative",
+        "tramadol",
+        "morphine",
+        "pethidine",
+    ]
+
+    return any(keyword in clean_name for keyword in risky_keywords)
+
+
+def clean_weak_medicine_suggestions(
     medicines: List[Dict[str, str]],
     patient_data: Dict[str, Any],
-    medicine_name: str,
-    dose: str,
-    frequency: str,
-    duration: str,
-    note: str,
-) -> None:
+) -> List[Dict[str, str]]:
     allergies = (patient_data.get("allergies") or "").lower()
     existing = (patient_data.get("existing_disease") or "").lower()
-    name_lower = medicine_name.lower()
-
-    if is_vague_medicine_name(medicine_name):
-        return
-
-    if "paracetamol" in name_lower and "liver" in existing:
-        return
-
-    if "cetirizine" in name_lower and "cetirizine" in allergies:
-        return
-
-    if "diclofenac" in name_lower and text_has_any(
-        f"{allergies} {existing}",
-        ["diclofenac", "nsaid allergy", "severe asthma", "stomach ulcer", "kidney disease"],
-    ):
-        return
-
-    if looks_like_specific_antibiotic(medicine_name) and not condition_supports_antibiotic(patient_data):
-        return
-
-    medicines.append(
-        {
-            "medicine_name": medicine_name,
-            "dose": dose,
-            "frequency": frequency,
-            "duration": duration,
-            "note": note,
-        }
+    full_text = get_case_text(patient_data)
+    emergency = detect_emergency(
+        patient_data.get("symptoms", ""),
+        patient_data.get("additional_info", ""),
     )
+
+    cleaned = []
+    seen_names = set()
+
+    if not isinstance(medicines, list):
+        return []
+
+    for med in medicines:
+        if not isinstance(med, dict):
+            continue
+
+        name = str(med.get("medicine_name", "")).strip()
+        name_lower = name.lower()
+
+        if not name:
+            continue
+
+        if name_lower in seen_names:
+            continue
+
+        if is_vague_medicine_name(name):
+            continue
+
+        if emergency and is_risky_emergency_medicine(name):
+            continue
+
+        if "antibiotic" in name_lower and not looks_like_specific_antibiotic(name):
+            continue
+
+        if looks_like_specific_antibiotic(name) and not condition_supports_antibiotic(patient_data):
+            continue
+
+        if "vitamin" in name_lower and not any(
+            clue in full_text
+            for clue in [
+                "vitamin d low",
+                "vitamin b12 low",
+                "deficiency confirmed",
+                "lab confirmed",
+                "doctor advised vitamin",
+                "known vitamin deficiency",
+            ]
+        ):
+            continue
+
+        if "paracetamol" in name_lower and "liver" in existing:
+            continue
+
+        if "cetirizine" in name_lower and "cetirizine" in allergies:
+            continue
+
+        if "diclofenac" in name_lower and text_has_any(
+            f"{allergies} {existing}",
+            ["diclofenac", "nsaid allergy", "severe asthma", "stomach ulcer", "kidney disease"],
+        ):
+            continue
+
+        med["medicine_name"] = name
+        med["dose"] = str(med.get("dose") or "Doctor to confirm dose").strip()
+        med["frequency"] = str(med.get("frequency") or "Doctor to confirm frequency").strip()
+        med["duration"] = str(med.get("duration") or "Doctor to confirm duration").strip()
+
+        note = str(med.get("note") or "").strip()
+        if not note:
+            note = "Doctor must verify indication, contraindications, allergy, current medicines, and suitability before approval."
+
+        if "doctor" not in note.lower():
+            note = f"{note} Doctor must verify suitability before approval."
+
+        if looks_like_specific_antibiotic(name):
+            if "bacterial" not in note.lower() and "infection" not in note.lower():
+                note = (
+                    f"{note} Confirm bacterial indication, allergy status, renal/liver status, "
+                    "pregnancy status if relevant, and local guideline suitability before approval."
+                )
+
+        med["note"] = note
+
+        seen_names.add(name_lower)
+        cleaned.append(med)
+
+    return cleaned[:6]
 
 
 def is_broad_non_specific_case(patient_data: Dict[str, Any]) -> bool:
@@ -733,341 +820,86 @@ def is_broad_non_specific_case(patient_data: Dict[str, Any]) -> bool:
     return (broad_count >= 3 and not has_clear_acute) or (broad_count >= 2 and long_or_unclear_duration)
 
 
-def build_broad_case_symptomatic_medicines(patient_data: Dict[str, Any]) -> List[Dict[str, str]]:
-    text = get_case_text(patient_data)
-    medicines: List[Dict[str, str]] = []
-
-    if text_has_any(text, ["headache", "neck pain", "body pain", "pain", "মাথা ব্যথা", "ব্যথা"]):
-        add_medicine(
-            medicines=medicines,
-            patient_data=patient_data,
-            medicine_name="Paracetamol",
-            dose="500 mg",
-            frequency="Every 6-8 hours if needed",
-            duration="1-3 days",
-            note=(
-                "Symptomatic relief for headache/body pain only. "
-                "Doctor must confirm liver status, alcohol history, total daily dose, and suitability before approval."
-            ),
-        )
-
-    if text_has_any(text, ["cough", "cold", "sneezing", "runny nose", "allergy", "কাশি", "ঠান্ডা"]):
-        add_medicine(
-            medicines=medicines,
-            patient_data=patient_data,
-            medicine_name="Cetirizine",
-            dose="10 mg",
-            frequency="Once at night if allergic cough/cold/runny nose is present",
-            duration="3-5 days",
-            note=(
-                "For allergy-related cough/cold symptoms only. May cause drowsiness. "
-                "Doctor should confirm whether cough is allergic, viral, or lower respiratory before approval."
-            ),
-        )
-
-    if text_has_any(text, ["neck pain", "muscle pain", "muscle strain", "ঘাড় ব্যথা"]):
-        add_medicine(
-            medicines=medicines,
-            patient_data=patient_data,
-            medicine_name="Topical Diclofenac Gel",
-            dose="Apply a thin layer on the painful area",
-            frequency="2-3 times daily",
-            duration="3-5 days",
-            note=(
-                "For local musculoskeletal neck pain only. Avoid broken skin. "
-                "Doctor should confirm NSAID allergy, asthma history, kidney disease, stomach ulcer history, and suitability."
-            ),
-        )
-
-    if text_has_any(text, ["weak", "weakness", "tired", "fatigue", "hot weather", "dehydration", "poor intake"]):
-        add_medicine(
-            medicines=medicines,
-            patient_data=patient_data,
-            medicine_name="Oral Rehydration Solution (ORS)",
-            dose="Prepare according to packet instruction",
-            frequency="Small frequent sips as needed",
-            duration="During weakness, poor intake, heat exposure, or dehydration risk",
-            note="Supportive hydration option. Doctor should confirm hydration status and cause of weakness.",
-        )
-
-    return medicines[:4]
-
-
 def build_dynamic_fallback_medicines(patient_data: Dict[str, Any]) -> List[Dict[str, str]]:
-    symptoms = (patient_data.get("symptoms") or "").lower()
-    additional = (patient_data.get("additional_info") or "").lower()
-    allergies = (patient_data.get("allergies") or "").lower()
-    existing = (patient_data.get("existing_disease") or "").lower()
-    text = f"{symptoms} {additional}"
-    medicines: List[Dict[str, str]] = []
+    """
+    Kept only for backward compatibility.
 
-    has_emergency = detect_emergency(symptoms, additional)
-
-    if has_emergency:
-        if any(word in text for word in ["headache", "neck pain", "body pain", "pain", "মাথা", "ঘাড়", "ব্যথা"]):
-            if "paracetamol" not in allergies and "liver" not in existing:
-                medicines.append(
-                    {
-                        "medicine_name": "Paracetamol",
-                        "dose": "500 mg",
-                        "frequency": "If pain or fever is present, as directed by doctor",
-                        "duration": "Short course until doctor review",
-                        "note": (
-                            "Supportive pain/fever medicine only. Avoid overdose and avoid if significant liver disease is present."
-                        ),
-                    }
-                )
-
-        if any(
-            word in text
-            for word in [
-                "low blood pressure",
-                "bp low",
-                "pressure low",
-                "dizzy",
-                "weak",
-                "dehydration",
-                "vomiting",
-                "diarrhea",
-                "loose stool",
-            ]
-        ):
-            medicines.append(
-                {
-                    "medicine_name": "Oral Rehydration Solution (ORS)",
-                    "dose": "Prepare according to packet instruction",
-                    "frequency": "Small frequent sips if conscious and able to drink",
-                    "duration": "Until assessed by doctor",
-                    "note": (
-                        "Supportive hydration only. If chest pain, fainting, confusion, severe weakness, "
-                        "or breathing difficulty occurs, go to emergency immediately."
-                    ),
-                }
-            )
-
-        if any(word in text for word in ["neck pain", "muscle pain", "ঘাড় ব্যথা"]):
-            medicines.append(
-                {
-                    "medicine_name": "Topical Diclofenac Gel",
-                    "dose": "Apply thin layer on painful neck area",
-                    "frequency": "2-3 times daily, as directed by doctor",
-                    "duration": "Short course",
-                    "note": "For local muscle pain only. Do not apply on broken skin. Doctor should confirm suitability.",
-                }
-            )
-
-        if any(word in text for word in ["allergy", "runny nose", "sneezing", "itching", "cold"]):
-            if "cetirizine" not in allergies:
-                medicines.append(
-                    {
-                        "medicine_name": "Cetirizine",
-                        "dose": "10 mg",
-                        "frequency": "Once at night if allergy/runny nose is present, as directed by doctor",
-                        "duration": "Short course",
-                        "note": "May cause drowsiness. Avoid driving or risky work after taking it.",
-                    }
-                )
-
-        if not medicines:
-            medicines.append(
-                {
-                    "medicine_name": "Paracetamol",
-                    "dose": "500 mg",
-                    "frequency": "If fever or pain is present, as directed by doctor",
-                    "duration": "Short course until doctor review",
-                    "note": "Basic supportive medicine only. Doctor must confirm suitability before approval.",
-                }
-            )
-
-        return clean_weak_medicine_suggestions(medicines, patient_data)
-
-    if any(word in text for word in ["diarrhea", "loose stool", "vomiting", "stomach", "পেট", "ডায়রিয়া", "বমি"]):
-        medicines.append(
-            {
-                "medicine_name": "Oral Rehydration Solution (ORS)",
-                "dose": "Prepare according to packet instruction",
-                "frequency": "Small frequent sips after vomiting or loose stool",
-                "duration": "Until dehydration risk improves",
-                "note": "Important for fluid and salt replacement in Bangladesh context.",
-            }
-        )
-
-        if "vomiting" in text or "বমি" in text:
-            medicines.append(
-                {
-                    "medicine_name": "Ondansetron",
-                    "dose": "4 mg",
-                    "frequency": "If vomiting continues, as directed by doctor",
-                    "duration": "Short course",
-                    "note": "Doctor should confirm suitability before final approval.",
-                }
-            )
-
-        if any(word in text for word in ["fever", "জ্বর", "pain", "ব্যথা"]) and "paracetamol" not in allergies and "liver" not in existing:
-            medicines.append(
-                {
-                    "medicine_name": "Paracetamol",
-                    "dose": "500 mg",
-                    "frequency": "If fever or pain occurs, as directed by doctor",
-                    "duration": "Short course",
-                    "note": "Avoid overdose and avoid if significant liver disease is present.",
-                }
-            )
-
-    if any(word in text for word in ["fever", "জ্বর", "body pain", "headache", "মাথা ব্যথা"]):
-        if "paracetamol" not in allergies and "liver" not in existing:
-            medicines.append(
-                {
-                    "medicine_name": "Paracetamol",
-                    "dose": "500 mg",
-                    "frequency": "If fever or headache/body pain occurs, as directed by doctor",
-                    "duration": "Short course",
-                    "note": "Doctor should review temperature pattern and risk factors.",
-                }
-            )
-
-        medicines.append(
-            {
-                "medicine_name": "Oral Rehydration Solution (ORS)",
-                "dose": "Prepare according to packet instruction",
-                "frequency": "Small frequent sips as needed",
-                "duration": "During fever or weakness period",
-                "note": "Hydration is important in Bangladesh heat and fever context.",
-            }
-        )
-
-    if any(word in text for word in ["cough", "cold", "sore throat", "কাশি", "ঠান্ডা", "গলা"]):
-        if "cetirizine" not in allergies:
-            medicines.append(
-                {
-                    "medicine_name": "Cetirizine",
-                    "dose": "10 mg",
-                    "frequency": "Once at night if allergy/runny nose is present, as directed by doctor",
-                    "duration": "Short course",
-                    "note": "May cause drowsiness.",
-                }
-            )
-
-    if any(word in text for word in ["neck pain", "muscle pain", "back pain", "ঘাড় ব্যথা", "পিঠ ব্যথা"]):
-        medicines.append(
-            {
-                "medicine_name": "Topical Diclofenac Gel",
-                "dose": "Apply thin layer on painful area",
-                "frequency": "2-3 times daily, as directed by doctor",
-                "duration": "Short course",
-                "note": "For local muscle pain only. Avoid broken skin and doctor should confirm suitability.",
-            }
-        )
-
-    if any(word in text for word in ["acidity", "gas", "heartburn", "gastric", "অ্যাসিডিটি"]):
-        medicines.append(
-            {
-                "medicine_name": "Antacid",
-                "dose": "As directed by doctor",
-                "frequency": "After meal if acidity occurs",
-                "duration": "Short course",
-                "note": "Diet and meal timing should also be reviewed.",
-            }
-        )
-
-    if any(word in text for word in ["hair fall", "hair loss", "reducing hair line"]):
-        medicines.append(
-            {
-                "medicine_name": "Ketoconazole Shampoo",
-                "dose": "Apply to scalp and wash after 3-5 minutes",
-                "frequency": "2 times weekly, as directed by doctor",
-                "duration": "2-4 weeks",
-                "note": (
-                    "Only if dandruff/itchy scalp is present. Hair fall needs evaluation for thyroid, "
-                    "anemia, ferritin, vitamin D/B12, stress, and nutrition."
-                ),
-            }
-        )
-
-    return clean_weak_medicine_suggestions(medicines, patient_data)
+    Important:
+    No symptom-to-medicine hardcoded fallback here.
+    Medicine must be generated dynamically by Groq through repair_medicine_section_with_ai().
+    """
+    return []
 
 
-def clean_weak_medicine_suggestions(
-    medicines: List[Dict[str, str]],
+async def repair_medicine_section_with_ai(
     patient_data: Dict[str, Any],
+    current_result: Dict[str, Any],
+    agent1_review: Dict[str, Any],
+    agent2_review: Dict[str, Any],
 ) -> List[Dict[str, str]]:
-    allergies = (patient_data.get("allergies") or "").lower()
-    existing = (patient_data.get("existing_disease") or "").lower()
-    full_text = get_case_text(patient_data)
+    system_prompt = """
+You are a medical prescription draft assistant for Bangladesh.
 
-    cleaned = []
-    seen_names = set()
+Task:
+Generate ONLY the medicine_section array for doctor review.
 
-    for med in medicines:
-        name = str(med.get("medicine_name", "")).strip()
-        name_lower = name.lower()
+Core instruction:
+- Medicine must be generated dynamically from the full patient case.
+- Do NOT use a fixed template.
+- Do NOT give the same medicines for every case.
+- Do NOT follow a simple symptom-to-medicine rule.
+- Think clinically from the full case context.
 
-        if not name:
-            continue
+Safety rules:
+- This is NOT final medical advice.
+- A registered doctor will review and approve.
+- If emergency signs exist, still provide safe supportive/symptomatic medicine candidates only when appropriate.
+- Do not provide definitive emergency treatment.
+- Do not suggest heart medicine, BP medicine, aspirin, nitroglycerin, sedatives, steroids, strong painkillers, or antibiotics unless clearly justified for doctor review.
+- Do not prescribe antibiotics randomly.
+- Do not write vague category names like Painkiller, Antibiotic, Antihistamine, Vitamin, Multivitamin, Cough Syrup, Tablet, Capsule, Syrup.
+- Use specific generic medicine names only.
+- Every medicine must include medicine_name, dose, frequency, duration, and note.
+- If no safe medicine candidate is reasonable, return an empty array.
+- For broad/non-specific cases, do not randomly add multivitamin. Prefer investigation and doctor evaluation if needed.
+- Respect allergies, existing disease, and current medicine.
+- Mention in note that doctor must verify suitability before approval.
 
-        if name_lower in seen_names:
-            continue
+Return only valid JSON in this format:
+{
+  "medicine_section": [
+    {
+      "medicine_name": "specific generic medicine name",
+      "dose": "string",
+      "frequency": "string",
+      "duration": "string",
+      "note": "doctor review and safety note"
+    }
+  ]
+}
+"""
 
-        if is_vague_medicine_name(name):
-            continue
+    payload = {
+        "patient_data": build_full_patient_context(
+            patient_data=patient_data,
+            followup_answers=agent1_review.get("followup_answers_used", []),
+            agent1_review=agent1_review,
+            agent2_review=agent2_review,
+        ),
+        "current_prescription_draft": current_result,
+        "instruction": (
+            "Generate medicine dynamically from this exact case. "
+            "Do not use fixed fallback medicines. "
+            "Do not add medicines just to fill the section."
+        ),
+    }
 
-        if "antibiotic" in name_lower and not looks_like_specific_antibiotic(name):
-            continue
+    repaired = await call_groq_json(system_prompt, payload)
 
-        if looks_like_specific_antibiotic(name) and not condition_supports_antibiotic(patient_data):
-            continue
+    if not repaired or not isinstance(repaired.get("medicine_section"), list):
+        return []
 
-        if "vitamin" in name_lower and not any(
-            clue in full_text
-            for clue in [
-                "vitamin d low",
-                "vitamin b12 low",
-                "deficiency confirmed",
-                "lab confirmed",
-                "doctor advised vitamin",
-            ]
-        ):
-            continue
-
-        if "paracetamol" in name_lower and "liver" in existing:
-            continue
-
-        if "cetirizine" in name_lower and "cetirizine" in allergies:
-            continue
-
-        if "diclofenac" in name_lower and text_has_any(
-            f"{allergies} {existing}",
-            ["diclofenac", "nsaid allergy", "severe asthma", "stomach ulcer", "kidney disease"],
-        ):
-            continue
-
-        if looks_like_specific_antibiotic(name):
-            note = str(med.get("note", "")).strip()
-
-            if not note:
-                med["note"] = (
-                    "Antibiotic candidate for doctor review. Confirm bacterial indication, allergy, "
-                    "pregnancy status, renal/liver status, and suitability before approval."
-                )
-            elif "doctor" not in note.lower():
-                med["note"] = (
-                    f"{note} Doctor must confirm bacterial indication, allergy status, "
-                    "and suitability before approval."
-                )
-
-            if not str(med.get("dose", "")).strip():
-                med["dose"] = "Doctor to confirm dose"
-
-            if not str(med.get("frequency", "")).strip():
-                med["frequency"] = "Doctor to confirm frequency"
-
-            if not str(med.get("duration", "")).strip():
-                med["duration"] = "Doctor to confirm duration"
-
-        seen_names.add(name_lower)
-        cleaned.append(med)
-
-    return cleaned[:5]
+    return clean_weak_medicine_suggestions(repaired["medicine_section"], patient_data)
 
 
 def fallback_agent3_prescription(
@@ -1093,8 +925,6 @@ def fallback_agent3_prescription(
     if not diagnosis:
         diagnosis = ["Clinical condition requiring doctor review"]
 
-    medicine_section = build_dynamic_fallback_medicines(patient_data)
-
     return {
         "document_title": "AI Prescription Draft",
         "status": "AI Generated",
@@ -1111,7 +941,7 @@ def fallback_agent3_prescription(
         },
         "chief_complaints": symptoms_list or [patient_data.get("symptoms", "")],
         "possible_diagnosis": diagnosis[:3],
-        "medicine_section": medicine_section,
+        "medicine_section": [],
         "healthcare_advice": [
             "Drink safe water and maintain hydration.",
             "Avoid self-medicating with antibiotics.",
@@ -1168,6 +998,11 @@ def enforce_prescription_quality(
     if not isinstance(result.get("investigation_advice"), list):
         result["investigation_advice"] = []
 
+    result["medicine_section"] = clean_weak_medicine_suggestions(
+        result.get("medicine_section", []),
+        patient_data,
+    )
+
     emergency = detect_emergency(
         patient_data.get("symptoms", ""),
         patient_data.get("additional_info", ""),
@@ -1175,23 +1010,26 @@ def enforce_prescription_quality(
 
     if emergency:
         result["top_warning"] = "Please seek emergency medical care immediately."
-        result["medicine_section"] = build_dynamic_fallback_medicines(patient_data)
+
         result["healthcare_advice"] = [
             "Seek emergency medical care immediately.",
             "Do not delay care while waiting for online prescription review.",
-            "The medicines listed are only basic symptomatic/supportive candidates for doctor review, not definitive emergency treatment.",
+            "The listed medicines, if any, are only doctor-review candidates and not definitive emergency treatment.",
             "Avoid self-medicating with antibiotics, heart medicines, blood pressure medicines, aspirin, nitroglycerin, steroids, sedatives, or strong painkillers unless a doctor confirms.",
         ]
+
         result["investigation_advice"] = [
             "Emergency doctor assessment required.",
             "Blood pressure, pulse, oxygen saturation, and physical examination.",
             "ECG/troponin if chest pain or cardiac symptoms are present.",
-            "CBC, blood glucose, and electrolytes if weakness, dizziness, dehydration, or low blood pressure symptoms are present.",
+            "CBC, blood glucose, electrolytes, and other tests based on doctor assessment.",
         ]
+
         result["follow_up_advice"] = (
             "Go to the nearest emergency department immediately, especially if chest pain, fainting, "
-            "breathing difficulty, severe weakness, confusion, or worsening symptoms occur."
+            "breathing difficulty, severe weakness, confusion, severe dehydration, or worsening symptoms occur."
         )
+
         return result
 
     if is_broad_non_specific_case(patient_data):
@@ -1199,8 +1037,6 @@ def enforce_prescription_quality(
             "Broad symptoms requiring clinical evaluation",
             "Possible thyroid imbalance, anemia, nutritional deficiency, sleep/stress-related issue, respiratory infection, or musculoskeletal strain should be assessed by a doctor",
         ]
-
-        result["medicine_section"] = build_broad_case_symptomatic_medicines(patient_data)
 
         result["healthcare_advice"] = [
             "Maintain regular sleep schedule and hydration.",
@@ -1216,7 +1052,7 @@ def enforce_prescription_quality(
             "Serum ferritin / iron profile if hair fall and tiredness persist",
             "Vitamin D and Vitamin B12 level if clinically indicated",
             "Fasting blood glucose or random blood glucose",
-            "Doctor physical examination for cough and neck pain",
+            "Doctor physical examination based on symptoms",
         ]
 
         result["follow_up_advice"] = (
@@ -1225,19 +1061,10 @@ def enforce_prescription_quality(
         )
 
         result["quality_note"] = (
-            "Broad/non-specific case: symptomatic Rx candidates are provided only to reduce doctor workload. "
-            "Doctor must verify suitability before approval."
+            "Broad/non-specific case: medicine candidates must be dynamically generated and verified by doctor."
         )
 
         return result
-
-    result["medicine_section"] = clean_weak_medicine_suggestions(
-        result.get("medicine_section", []),
-        patient_data,
-    )
-
-    if not result["medicine_section"]:
-        result["medicine_section"] = build_dynamic_fallback_medicines(patient_data)
 
     if not result["healthcare_advice"]:
         result["healthcare_advice"] = [
@@ -1270,31 +1097,29 @@ Generate a structured prescription draft for doctor review.
 
 VERY IMPORTANT RULES:
 - This is an AI-generated draft only. A registered doctor will review and approve it.
-- Even in emergency cases, include safe basic symptomatic/supportive medicine candidates when relevant, but clearly state they are not definitive emergency treatment.
-- For emergency cases, do not suggest antibiotics, BP medicine, heart medicine, aspirin, nitroglycerin, steroids, sedatives, or strong painkillers unless explicit doctor-level indication is present.
-- Emergency warning and urgent doctor/emergency referral must remain visible.
-- Medicine section should not be empty unless there is truly no safe supportive option.
 - The goal is to reduce doctor workload, not to replace the doctor.
+- Medicine must be generated dynamically from the patient case, not from a fixed template.
+- Do NOT give the same medicines for every case.
 - Do NOT use a fixed number of medicines.
 - Do NOT always give 2 medicines.
 - Do NOT prescribe medicine just to fill the Rx section.
-- But do NOT leave Rx empty when safe symptomatic medicine candidates are reasonable.
-- For broad/non-specific symptoms, provide safe symptomatic medicine candidates if relevant, plus strong investigations.
+- But do NOT leave Rx empty when safe symptomatic/supportive medicine candidates are reasonable.
+- Even in emergency cases, include safe basic symptomatic/supportive medicine candidates when relevant, but clearly state they are not definitive emergency treatment.
+- For emergency cases, do not suggest antibiotics, BP medicine, heart medicine, aspirin, nitroglycerin, steroids, sedatives, or strong painkillers unless explicit doctor-level indication is present.
+- Emergency warning and urgent doctor/emergency referral must remain visible.
+- For broad/non-specific symptoms, provide safe symptomatic medicine candidates only when relevant, plus strong investigations.
 - Hair fall + tiredness + oversleeping + headache type cases should NOT automatically receive multivitamin.
 - Do NOT suggest vitamins unless deficiency is known, strongly suspected with proper context, or doctor review is needed.
 - Never write vague medicine/category names: Antibiotic, Painkiller, Antihistamine, Vitamin, Multivitamin, Cough syrup, Tablet, Capsule, Syrup.
 - Use specific generic medicine names only.
-- Avoid unnecessary antibiotics, but when antibiotic is clinically reasonable, provide a specific generic antibiotic candidate with dose, frequency, duration, and doctor verification note.
-- NEVER write only "Antibiotic" as medicine_name.
-- If an antibiotic is clinically indicated, medicine_name must be a specific generic antibiotic name, for example: Amoxicillin + Clavulanic Acid, Azithromycin, Cefixime, Metronidazole, Nitrofurantoin, Doxycycline, Cephalexin, Cefuroxime, or Ciprofloxacin.
-- Do not give antibiotics randomly. Only suggest a specific antibiotic candidate when the symptoms, duration, fever pattern, urinary symptoms, wound/pus, suspected bacterial infection, or doctor-facing context supports it.
+- Avoid unnecessary antibiotics.
+- If an antibiotic is clinically indicated, medicine_name must be a specific generic antibiotic name, not just "Antibiotic".
 - If bacterial indication is unclear, do not add an antibiotic in Rx. Instead add investigation_advice and follow_up_advice.
 - For every medicine, include dose, frequency, duration, and a note.
-- For every antibiotic candidate, include a note explaining the suspected indication and what the doctor must verify.
-- Antibiotic dose/frequency/duration must not be blank.
+- For every antibiotic candidate, include a note explaining suspected indication and what the doctor must verify.
 - Prefer generic names, not Bangladeshi brand names.
-- Paracetamol should not be used as a lazy default for every symptom, but can be used for fever/headache/body pain if clinically reasonable.
 - Consider all patient information, not only the main symptom text.
+- Do not invent patient history, disease, medicine use, pregnancy status, HIV/ART, TB, diabetes, hypertension, or allergy unless provided.
 
 You must consider ALL of these:
 - age
@@ -1371,6 +1196,24 @@ JSON format:
         agent2_review=agent2_review,
     )
 
+    if not result.get("medicine_section"):
+        repaired_medicines = await repair_medicine_section_with_ai(
+            patient_data=patient_data,
+            current_result=result,
+            agent1_review=agent1_review,
+            agent2_review=agent2_review,
+        )
+
+        if repaired_medicines:
+            result["medicine_section"] = repaired_medicines
+
+            result = enforce_prescription_quality(
+                result=result,
+                patient_data=patient_data,
+                agent1_review=agent1_review,
+                agent2_review=agent2_review,
+            )
+
     return result
 
 
@@ -1426,7 +1269,7 @@ def prescription_json_to_text(data: Dict[str, Any]) -> str:
             lines.append(f"   Note: {med.get('note', '-')}")
             lines.append("")
     else:
-        lines.append("- No routine medicine selected in this draft.")
+        lines.append("- No medicine candidate selected in this draft. Doctor review required.")
         lines.append("")
 
     lines.append("Advice:")
