@@ -10,7 +10,6 @@ MediGuard AI is a full-stack AI-assisted medical consultation and prescription r
 ## Live Deployment
 
 * **Frontend:** `https://mediguard-ai-mu.vercel.app`
-* **Backend API:** `https://mediguard-api.pixelstack.cloud`
 
 ---
 
